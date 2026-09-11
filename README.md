@@ -2,6 +2,15 @@
 
 每次生成的视频方案会自动进入左侧历史记录，并可一键恢复；“知识脑图”入口会把视频标题、分镜和知识点整理成脑图；知识闪卡中的“需复习”会自动写入浏览器本地错题库，刷新页面后仍会保留。
 
+## 部署到 Render
+
+仓库内的 `render.yaml` 已包含 Node 构建、启动、健康检查和 SiliconFlow 云端配音配置。在 Render 选择 **New > Blueprint**，连接本仓库并填写两个 Secret：
+
+- `DEEPSEEK_API_KEY`：DeepSeek API Key
+- `IMAGE_API_KEY`：SiliconFlow API Key，同时用于图像和中文配音
+
+部署完成后使用 Render 提供的 `onrender.com` 地址。免费实例闲置 15 分钟后会休眠，首次打开和长视频渲染可能较慢；生成的媒体文件位于临时文件系统，服务重新部署后会消失。需要长期保存视频时，应使用付费实例并挂载持久磁盘，把 `MEDIA_ROOT` 设为磁盘中的目录。
+
 ## DeepSeek 配置（当前默认）
 
 当前项目已切换为 DeepSeek。打开 https://platform.deepseek.com/api_keys 创建密钥，在 `.env` 填写：

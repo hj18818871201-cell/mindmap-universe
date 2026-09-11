@@ -7,7 +7,7 @@ import {randomUUID} from 'node:crypto';
 import sharp from 'sharp';
 import ffmpegPath from 'ffmpeg-static';
 import {validatePlan} from '../shared/plan.js';
-export const mediaRoot=fileURLToPath(new URL('../media/',import.meta.url));
+export const mediaRoot=process.env.MEDIA_ROOT?path.resolve(process.env.MEDIA_ROOT):fileURLToPath(new URL('../media/',import.meta.url));
 const jobs=new Map();let active=false;
 function run(command,args,timeout=180000){return new Promise((resolve,reject)=>{let output='';const child=spawn(command,args,{stdio:['ignore','ignore','pipe']});const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('媒体处理超时'));},timeout);child.stderr.on('data',b=>{output=(output+b).slice(-12000);});child.on('error',e=>{clearTimeout(timer);reject(e);});child.on('close',code=>{clearTimeout(timer);code===0?resolve(output):reject(new Error(`媒体处理失败：${output.slice(-600)}`));});});}
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
@@ -28,6 +28,32 @@ async function audioDuration(inputPath){
  const match=info.match(/Duration: (\d+):(\d+):([\d.]+)/);
  if(!match)throw new Error('配音时长不可读');
  return Number(match[1])*3600+Number(match[2])*60+Number(match[3]);
+}
+function ttsProvider(){return process.env.TTS_PROVIDER||(process.platform==='darwin'?'local':'siliconflow');}
+async function synthesizeNarration(text,stem,plannedSeconds){
+ const provider=ttsProvider();
+ if(provider==='local'){
+  if(process.platform!=='darwin')throw new Error('云服务器不支持本机语音，请把 TTS_PROVIDER 设置为 siliconflow');
+  const textPath=stem+'.txt',audioPath=stem+'.aiff';await writeFile(textPath,text);
+  const voice=process.env.LOCAL_TTS_VOICE||'Tingting';
+  const configuredRate=Number(process.env.LOCAL_TTS_RATE||190);const baseRate=Number.isFinite(configuredRate)?configuredRate:190;
+  const synthesize=rate=>run('/usr/bin/say',['-v',voice,'-r',String(rate),'-f',textPath,'-o',audioPath]);
+  await synthesize(baseRate);let speech=await audioDuration(audioPath);const adjusted=speechRateForTarget(speech,plannedSeconds,baseRate);
+  if(adjusted<baseRate){await synthesize(adjusted);speech=await audioDuration(audioPath);}
+  return {audioPath,speech};
+ }
+ if(provider!=='siliconflow')throw new Error('TTS_PROVIDER 只能是 local 或 siliconflow');
+ const apiKey=process.env.TTS_API_KEY||process.env.IMAGE_API_KEY;
+ if(!apiKey)throw new Error('云端配音缺少 TTS_API_KEY（也可复用 IMAGE_API_KEY）');
+ const model=process.env.TTS_MODEL||'FunAudioLLM/CosyVoice2-0.5B';
+ const voice=process.env.TTS_VOICE||`${model}:anna`;
+ const naturalSeconds=Math.max(1,Array.from(text).length/5);
+ const speed=Math.max(.5,Math.min(1.35,naturalSeconds/Math.max(1,plannedSeconds-.6)));
+ const base=(process.env.TTS_API_BASE_URL||process.env.IMAGE_API_BASE_URL||'https://api.siliconflow.cn/v1').replace(/\/$/,'');
+ const response=await fetch(`${base}/audio/speech`,{method:'POST',headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({model,input:text,voice,response_format:'mp3',speed:Number(speed.toFixed(2)),gain:-2}),signal:AbortSignal.timeout(120000)});
+ if(!response.ok){const detail=await response.text().catch(()=>'');throw new Error(`SiliconFlow 配音失败（${response.status}）${detail?'：'+detail.slice(0,120):''}`);}
+ const audioPath=stem+'.mp3';await writeFile(audioPath,Buffer.from(await response.arrayBuffer()));
+ return {audioPath,speech:await audioDuration(audioPath)};
 }
 export function motionFilter(mode,index,duration){
  const frames=Math.max(1,Math.ceil(duration*25));
@@ -62,10 +88,11 @@ export function startRender(data){
  const plan=validatePlan(data,data?.video?.mode);
  if(plan.video.total_duration_seconds>600||plan.scenes.some(s=>s.narration.length>1200))throw Object.assign(new Error('本地成片暂支持10分钟以内，单分镜旁白不超过1200字'),{status:400});
  if(active)throw Object.assign(new Error('已有视频正在合成，请稍候'),{status:429});
- if(process.platform!=='darwin')throw Object.assign(new Error('当前本地配音需要 macOS；其他系统请配置语音适配器后使用'),{status:503});
+ if(ttsProvider()==='local'&&process.platform!=='darwin')throw Object.assign(new Error('云服务器请把 TTS_PROVIDER 设置为 siliconflow'),{status:503});
+ if(ttsProvider()==='siliconflow'&&!(process.env.TTS_API_KEY||process.env.IMAGE_API_KEY))throw Object.assign(new Error('云端配音缺少 TTS_API_KEY（也可复用 IMAGE_API_KEY）'),{status:503});
  if(!ffmpegPath||!existsSync(ffmpegPath))throw Object.assign(new Error('FFmpeg 未安装完成，请运行 npm install 并允许 ffmpeg-static 安装脚本'),{status:503});
  const id=randomUUID(),job={id,status:'running',progress:0,message:'准备成片',scenes:[],imageProvider:imageGenerationConfigured()?'siliconflow':'knowledge-card',warnings:[]};jobs.set(id,job);active=true;
- render(plan,job).catch(()=>{job.status='failed';job.message='成片失败，请检查本机中文语音与 FFmpeg 安装后重新合成';}).finally(()=>{active=false;});return job;
+ render(plan,job).catch(error=>{job.status='failed';job.message=`成片失败：${error.message||'请检查语音与 FFmpeg 配置'}`;}).finally(()=>{active=false;});return job;
 }
 async function render(plan,job){
  const dir=path.join(mediaRoot,job.id);await mkdir(dir,{recursive:true});let total=0;const subtitles=[];let imageAvailable=imageGenerationConfigured(),aiImages=0,fallbackImages=0;
@@ -76,17 +103,11 @@ async function render(plan,job){
    try{await generateSceneImage(scene,plan,stem+'.png');aiImages++;}
    catch(error){fallbackImages++;if(!job.warnings.length)job.warnings.push(`${error.message}；本次剩余分镜改用知识图卡`);if(error.imageFatal)imageAvailable=false;await sharp(Buffer.from(sceneSvg(scene,plan.video.title))).png().toFile(stem+'.png');}
   }else{fallbackImages++;await sharp(Buffer.from(sceneSvg(scene,plan.video.title))).png().toFile(stem+'.png');}
-  await writeFile(stem+'.txt',scene.narration);
-  const voice=process.env.LOCAL_TTS_VOICE||'Tingting';
-  const configuredRate=Number(process.env.LOCAL_TTS_RATE||190);const baseRate=Number.isFinite(configuredRate)?configuredRate:190;
-  const synthesizeSpeech=rate=>run('/usr/bin/say',['-v',voice,'-r',String(rate),'-f',stem+'.txt','-o',stem+'.aiff']);
-  await synthesizeSpeech(baseRate);let speech=await audioDuration(stem+'.aiff');
-  const adjustedRate=speechRateForTarget(speech,scene.duration_seconds,baseRate);
-  if(adjustedRate<baseRate){await synthesizeSpeech(adjustedRate);speech=await audioDuration(stem+'.aiff');}
+  const {audioPath,speech}=await synthesizeNarration(scene.narration,stem,scene.duration_seconds);
   const duration=effectiveSceneDuration(scene.duration_seconds,speech);
   // Preserve the requested plan duration, keep narration complete, and animate every still image.
   const vf=motionFilter(plan.video.mode,i,duration);
-  await run(ffmpegPath,['-y','-loop','1','-framerate','25','-i',stem+'.png','-i',stem+'.aiff','-vf',vf,'-af','apad','-t',String(duration),'-c:v','libx264','-preset','ultrafast','-crf','23','-c:a','aac','-ar','44100','-ac','2',stem+'.mp4']);
+  await run(ffmpegPath,['-y','-loop','1','-framerate','25','-i',stem+'.png','-i',audioPath,'-vf',vf,'-af','apad','-t',String(duration),'-c:v','libx264','-preset','ultrafast','-crf','23','-c:a','aac','-ar','44100','-ac','2',stem+'.mp4']);
   const chunks=lines(scene.narration,32);chunks.forEach((line,j)=>subtitles.push(`${subtitles.length+1}\n${stamp(total+j*speech/chunks.length)} --> ${stamp(total+(j+1)*speech/chunks.length)}\n${line}\n`));
   job.scenes.push({index:scene.index,image:`/media/${job.id}/scene-${i+1}.png`,duration_seconds:duration});total+=duration;
   job.progress=Math.round((i+1)/plan.scenes.length*80);

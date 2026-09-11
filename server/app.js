@@ -12,7 +12,7 @@ export function createApp({provider=process.env.AI_PROVIDER||'openai',apiKey=pro
  const app=express();let busy=false;
  const ai=client||(apiKey?new OpenAI({apiKey,timeout,maxRetries:0,baseURL:provider==='deepseek'?'https://api.deepseek.com':'https://api.openai.com/v1'}):null);
  app.disable('x-powered-by');
- app.use('/api',(req,res,next)=>{res.set('Cache-Control','no-store');const origin=req.get('origin');if(origin&&!['http://127.0.0.1:5173','http://localhost:5173',`http://${req.get('host')}`].includes(origin))return res.status(403).json({success:false,error:'请求来源不允许'});next();});
+ app.use('/api',(req,res,next)=>{res.set('Cache-Control','no-store');const origin=req.get('origin');let allowed=!origin||['http://127.0.0.1:5173','http://localhost:5173'].includes(origin);try{allowed=allowed||new URL(origin).host===req.get('host');}catch{}if(!allowed)return res.status(403).json({success:false,error:'请求来源不允许'});next();});
  app.use(express.json({limit:'256kb'}));
  app.get('/api/health',(_req,res)=>res.json({status:'ok',provider:demo?'demo':provider,configured:demo||Boolean(ai),model,imageProvider:imageGenerationConfigured()?'siliconflow':'knowledge-card',imageConfigured:imageGenerationConfigured()}));
  app.post('/api/generate-video-plan',async(req,res)=>{

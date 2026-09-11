@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: mindmap-universe
+    runtime: node
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: AI_PROVIDER
+        value: deepseek
+      - key: DEEPSEEK_MODEL
+        value: deepseek-flash
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: IMAGE_API_KEY
+        sync: false
+      - key: IMAGE_API_BASE_URL
+        value: https://api.siliconflow.cn/v1
+      - key: IMAGE_MODEL
+        value: Qwen/Qwen-Image
+      - key: TTS_PROVIDER
+        value: siliconflow
+      - key: TTS_API_BASE_URL
+        value: https://api.siliconflow.cn/v1
+      - key: TTS_MODEL
+        value: FunAudioLLM/CosyVoice2-0.5B
+      - key: TTS_VOICE
+        value: FunAudioLLM/CosyVoice2-0.5B:anna
