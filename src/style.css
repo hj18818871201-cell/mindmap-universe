@@ -1,0 +1,5 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+button:disabled {opacity:.45;cursor:not-allowed}
+@media(max-width:1250px){#root>div{min-width:1100px}body{overflow-x:auto}}
