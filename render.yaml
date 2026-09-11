@@ -2,6 +2,7 @@ services:
   - type: web
     name: mindmap-universe
     runtime: node
+    region: singapore
     branch: main
     buildCommand: npm ci && npm run build
     startCommand: npm start
