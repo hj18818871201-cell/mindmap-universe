@@ -9,10 +9,26 @@ services:
       PORT: 3001
       MEDIA_ROOT: /data/media
       TTS_PROVIDER: siliconflow
-    ports:
-      - "80:3001"
+    expose:
+      - "3001"
     volumes:
       - generated-media:/data/media
 
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - mindmap-universe
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
 volumes:
   generated-media:
+  caddy-data:
+  caddy-config:

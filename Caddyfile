@@ -1,0 +1,8 @@
+150-109-71-237.sslip.io {
+  encode zstd gzip
+  reverse_proxy mindmap-universe:3001
+}
+
+http://150.109.71.237 {
+  redir https://150-109-71-237.sslip.io{uri} permanent
+}
