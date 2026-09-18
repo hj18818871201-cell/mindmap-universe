@@ -88,21 +88,20 @@ export function startRender(data){
  const plan=validatePlan(data,data?.video?.mode);
  if(plan.video.total_duration_seconds>600||plan.scenes.some(s=>s.narration.length>1200))throw Object.assign(new Error('本地成片暂支持10分钟以内，单分镜旁白不超过1200字'),{status:400});
  if(active)throw Object.assign(new Error('已有视频正在合成，请稍候'),{status:429});
+ if(!imageGenerationConfigured())throw Object.assign(new Error('缺少 SiliconFlow IMAGE_API_KEY，AI 图片为必需项，已停止成片'),{status:503});
  if(ttsProvider()==='local'&&process.platform!=='darwin')throw Object.assign(new Error('云服务器请把 TTS_PROVIDER 设置为 siliconflow'),{status:503});
  if(ttsProvider()==='siliconflow'&&!(process.env.TTS_API_KEY||process.env.IMAGE_API_KEY))throw Object.assign(new Error('云端配音缺少 TTS_API_KEY（也可复用 IMAGE_API_KEY）'),{status:503});
  if(!ffmpegPath||!existsSync(ffmpegPath))throw Object.assign(new Error('FFmpeg 未安装完成，请运行 npm install 并允许 ffmpeg-static 安装脚本'),{status:503});
- const id=randomUUID(),job={id,status:'running',progress:0,message:'准备成片',scenes:[],imageProvider:imageGenerationConfigured()?'siliconflow':'knowledge-card',warnings:[]};jobs.set(id,job);active=true;
+ const id=randomUUID(),job={id,status:'running',progress:0,message:'准备成片',scenes:[],imageProvider:'siliconflow',warnings:[]};jobs.set(id,job);active=true;
  render(plan,job).catch(error=>{job.status='failed';job.message=`成片失败：${error.message||'请检查语音与 FFmpeg 配置'}`;}).finally(()=>{active=false;});return job;
 }
 async function render(plan,job){
- const dir=path.join(mediaRoot,job.id);await mkdir(dir,{recursive:true});let total=0;const subtitles=[];let imageAvailable=imageGenerationConfigured(),aiImages=0,fallbackImages=0;
+ const dir=path.join(mediaRoot,job.id);await mkdir(dir,{recursive:true});let total=0;const subtitles=[];
  for(const [i,scene] of plan.scenes.entries()){
   job.message=`生成分镜 ${i+1}/${plan.scenes.length} 的图像与旁白`;job.progress=Math.round(i/plan.scenes.length*80);
   const stem=path.join(dir,`scene-${i+1}`);
-  if(imageAvailable){
-   try{await generateSceneImage(scene,plan,stem+'.png');aiImages++;}
-   catch(error){fallbackImages++;if(!job.warnings.length)job.warnings.push(`${error.message}；本次剩余分镜改用知识图卡`);if(error.imageFatal)imageAvailable=false;await sharp(Buffer.from(sceneSvg(scene,plan.video.title))).png().toFile(stem+'.png');}
-  }else{fallbackImages++;await sharp(Buffer.from(sceneSvg(scene,plan.video.title))).png().toFile(stem+'.png');}
+  try{await generateSceneImage(scene,plan,stem+'.png');}
+  catch(error){throw new Error(`${error.message}；AI 图片为必需项，本次没有生成不完整视频`);}
   const {audioPath,speech}=await synthesizeNarration(scene.narration,stem,scene.duration_seconds);
   const duration=effectiveSceneDuration(scene.duration_seconds,speech);
   // Preserve the requested plan duration, keep narration complete, and animate every still image.
@@ -112,7 +111,6 @@ async function render(plan,job){
   job.scenes.push({index:scene.index,image:`/media/${job.id}/scene-${i+1}.png`,duration_seconds:duration});total+=duration;
   job.progress=Math.round((i+1)/plan.scenes.length*80);
  }
- job.imageProvider=aiImages===plan.scenes.length?'siliconflow':aiImages>0?'mixed':'knowledge-card';
  job.message='混合旁白与配乐，封装 MP4';job.progress=85;
  const concatPath=path.join(dir,'concat.txt'),subtitlePath=path.join(dir,'subtitles.srt');
  await writeFile(concatPath,plan.scenes.map((_,i)=>`file 'scene-${i+1}.mp4'`).join('\n'));await writeFile(subtitlePath,subtitles.join('\n'));await writeFile(path.join(dir,'subtitles.vtt'),'WEBVTT\n\n'+subtitles.join('\n').replaceAll(',', '.'));await writeFile(path.join(dir,'bgm.wav'),music(total));
