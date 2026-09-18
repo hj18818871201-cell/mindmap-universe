@@ -2,6 +2,31 @@
 
 每次生成的视频方案会自动进入左侧历史记录，并可一键恢复；“知识脑图”入口会把视频标题、分镜和知识点整理成脑图；知识闪卡中的“需复习”会自动写入浏览器本地错题库，刷新页面后仍会保留。
 
+## 部署到自己的云服务器（推荐）
+
+仓库已提供 `Dockerfile` 和 `compose.yaml`，适用于腾讯云轻量应用服务器、阿里云 ECS 或任意安装了 Docker 的 Linux 服务器。它会构建前端、启动 Node 后端、保留生成的视频文件，并把网站发布在服务器的 80 端口。
+
+服务器建议至少选择 **2 核 CPU、2 GB 内存、20 GB 磁盘、Ubuntu 22.04/24.04**。视频合成会明显占用 CPU；1 GB 内存实例容易在安装依赖或合成三分钟视频时失败。
+
+在服务器安装 Docker 后执行：
+
+```sh
+git clone https://github.com/hj18818871201-cell/mindmap-universe.git
+cd mindmap-universe
+cp .env.example .env
+nano .env
+docker compose up -d --build
+```
+
+在 `.env` 至少填写 `DEEPSEEK_API_KEY` 和 `IMAGE_API_KEY`，并保持 `TTS_PROVIDER=siliconflow`。不要把 `.env` 提交到 GitHub。部署成功后打开 `http://服务器公网IP`；后续更新使用：
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+生成的视频保存在 Docker 卷 `generated-media`，重启容器不会消失。绑定域名和 HTTPS 时，可在前面增加 Caddy 或使用云厂商提供的证书服务。
+
 ## 部署到 Render
 
 仓库内的 `render.yaml` 已包含 Node 构建、启动、健康检查和 SiliconFlow 云端配音配置。在 Render 选择 **New > Blueprint**，连接本仓库并填写两个 Secret：
