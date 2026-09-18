@@ -5,12 +5,14 @@ import {zodTextFormat} from 'openai/helpers/zod';
 import {PlanSchema,validatePlan,demoPlan} from '../shared/plan.js';
 import {fileURLToPath} from 'node:url';
 const error=(message,status=502)=>Object.assign(new Error(message),{status});
-export function createApp({provider=process.env.AI_PROVIDER||'openai',apiKey=provider==='deepseek'?process.env.DEEPSEEK_API_KEY:process.env.OPENAI_API_KEY,model=provider==='deepseek'?(process.env.DEEPSEEK_MODEL||'deepseek-flash'):(process.env.OPENAI_MODEL||'gpt-4o-2024-08-06'),demo=process.env.DEMO_MODE==='true',client,timeout=90000}={}){
- if(!['openai','deepseek'].includes(provider))throw new Error('AI_PROVIDER 必须为 openai 或 deepseek');
- const providerName=provider==='deepseek'?'DeepSeek':'OpenAI';
- const keyName=provider==='deepseek'?'DEEPSEEK_API_KEY':'OPENAI_API_KEY';
+export function createApp({provider=process.env.AI_PROVIDER||'openai',apiKey=provider==='deepseek'?process.env.DEEPSEEK_API_KEY:provider==='siliconflow'?(process.env.SILICONFLOW_API_KEY||process.env.IMAGE_API_KEY):process.env.OPENAI_API_KEY,model=provider==='deepseek'?(process.env.DEEPSEEK_MODEL||'deepseek-flash'):provider==='siliconflow'?(process.env.SILICONFLOW_MODEL||'deepseek-ai/DeepSeek-V3.2'):(process.env.OPENAI_MODEL||'gpt-4o-2024-08-06'),demo=process.env.DEMO_MODE==='true',client,timeout=90000}={}){
+ if(!['openai','deepseek','siliconflow'].includes(provider))throw new Error('AI_PROVIDER 必须为 openai、deepseek 或 siliconflow');
+ const providerName=provider==='deepseek'?'DeepSeek':provider==='siliconflow'?'SiliconFlow':'OpenAI';
+ const keyName=provider==='deepseek'?'DEEPSEEK_API_KEY':provider==='siliconflow'?'SILICONFLOW_API_KEY（也可复用 IMAGE_API_KEY）':'OPENAI_API_KEY';
+ const chatProvider=provider==='deepseek'||provider==='siliconflow';
+ const baseURL=provider==='deepseek'?'https://api.deepseek.com':provider==='siliconflow'?(process.env.SILICONFLOW_API_BASE_URL||'https://api.siliconflow.cn/v1'):'https://api.openai.com/v1';
  const app=express();let busy=false;
- const ai=client||(apiKey?new OpenAI({apiKey,timeout,maxRetries:0,baseURL:provider==='deepseek'?'https://api.deepseek.com':'https://api.openai.com/v1'}):null);
+ const ai=client||(apiKey?new OpenAI({apiKey,timeout,maxRetries:0,baseURL}):null);
  app.disable('x-powered-by');
  app.use('/api',(req,res,next)=>{res.set('Cache-Control','no-store');const origin=req.get('origin');let allowed=!origin||['http://127.0.0.1:5173','http://localhost:5173'].includes(origin);try{allowed=allowed||new URL(origin).host===req.get('host');}catch{}if(!allowed)return res.status(403).json({success:false,error:'请求来源不允许'});next();});
  app.use(express.json({limit:'256kb'}));
@@ -26,13 +28,15 @@ export function createApp({provider=process.env.AI_PROVIDER||'openai',apiKey=pro
    if(demo)plan=demoPlan(prompt.trim(),mode);
    else{
     const instructions=`你是知识视频导演。用中文根据用户需求生成完整视频方案，通常4–8个分镜，每个包含详细画面提示、口语旁白、知识卡片。当前模式必须为 ${mode}。image 模式描述主体、环境、镜头、光影和构图；html 模式描述可实现的文字、图表和节点动画，不输出可执行代码。分镜序号从1连续排列，整数秒时长之和必须等于总时长。如果用户指定总时长，total_duration_seconds 必须与用户要求完全一致，各分镜 duration_seconds 之和也必须等于该时长。每段旁白应按每秒约5个中文字符匹配该分镜时长（例如30秒约150个中文字符），内容连续、自然、有信息量，持续讲解到分镜结束前约1秒，禁止用停顿或重复内容凑时长。生成3–5道基于实际内容的问答，ID唯一。BGM提供风格与理由，音量不遮盖旁白。不要宣称已生成图像、配音或视频文件。`;
-    if(provider==='deepseek'){
+    if(chatProvider){
      const schema=zodTextFormat(PlanSchema,'video_plan').schema;
-     const response=await ai.chat.completions.create({model,messages:[{role:'system',content:instructions+' 只返回一个 JSON 对象，不输出 Markdown。必须满足以下 JSON Schema：'+JSON.stringify(schema)},{role:'user',content:prompt.trim()}],response_format:{type:'json_object'},thinking:{type:'disabled'},max_tokens:8192,stream:false},{signal:AbortSignal.timeout(timeout)});
+     const request={model,messages:[{role:'system',content:instructions+' 只返回一个 JSON 对象，不输出 Markdown。必须满足以下 JSON Schema：'+JSON.stringify(schema)},{role:'user',content:prompt.trim()}],response_format:{type:'json_object'},max_tokens:8192,stream:false};
+     if(provider==='deepseek')request.thinking={type:'disabled'};
+     const response=await ai.chat.completions.create(request,{signal:AbortSignal.timeout(timeout)});
      const choice=response.choices?.[0];
      if(choice?.finish_reason==='content_filter'||choice?.message?.refusal)throw error('模型无法处理此请求，请修改主题后重试',422);
-     if(choice?.finish_reason!=='stop'||!choice.message?.content?.trim())throw error('DeepSeek 输出未完成或为空，请缩短需求后重试');
-     try{plan=JSON.parse(choice.message.content);}catch{throw error('DeepSeek 返回了无效 JSON，请重试');}
+     if(choice?.finish_reason!=='stop'||!choice.message?.content?.trim())throw error(`${providerName} 输出未完成或为空，请缩短需求后重试`);
+     try{plan=JSON.parse(choice.message.content);}catch{throw error(`${providerName} 返回了无效 JSON，请重试`);}
     }else{
      const response=await ai.responses.parse({model,store:false,max_output_tokens:10000,instructions,input:prompt.trim(),text:{format:zodTextFormat(PlanSchema,'video_plan')}},{signal:AbortSignal.timeout(timeout)});
     if(response.output?.some(item=>item.type==='message'&&item.content?.some(c=>c.type==='refusal')))throw error('模型无法处理此请求，请修改主题后重试',422);
